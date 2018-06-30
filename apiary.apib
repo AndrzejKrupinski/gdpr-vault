@@ -1,0 +1,1246 @@
+FORMAT: 1A
+
+# Vault API
+
+API umożliwia dostęp do repozytorium danych osobowych poprzez protokół HTTP. Jest zgodne ze specyfikacją [JSON API](http://jsonapi.org),
+która dokładnie opisuje odpowiedzialność serwera i klienta, strukturę dokumentów JSON, sposób wykonywania operacji CRUD
+oraz inne standardy i konwencje. Autoryzacja jest zgodna ze standardem [OAuth2](https://en.wikipedia.org/wiki/OAuth).
+
+# Nagłówki
+
+Specyfikacja [JSON API](http://jsonapi.org) wymaga, aby klient w każdym żądaniu do zasobów api wysyłał nagłówki `Accept` i `Content-Type`.
+Dostęp do zasobów Vault API wymaga więc przesłania nagłówków postaci:
+
+```
+Accept: application/vnd.api+json
+Content-Type: application/vnd.api+json
+```
+
+# Błędy
+
+Vault używa standardowych kodów odpowiedzi HTTP, które oznaczają poprawną odpowiedź, błąd po stronie klienta albo usługi.
+Poniższa tabela zawiera zestawienie najczęstszych kodów odpowiedzi:
+
+Kod | Opis
+-----|------------
+2xx | Sukces.
+200 | Wszystko poszło OK.
+4xx | Błędy po stronie klienta.
+400 | Dane żądania są poprawne, ale obsługa żądania sie nie powiodła.
+401 | W żądaniu nie przesłano prawidłowego tokenu.
+403 | Odmowa dostępu do określonego zasobu.
+404 | Żądany zasób nie istnieje.
+422 | Błąd walidacji - przekazano nieprawidłowe dane albo brakuje wymaganego parametru.
+429 | Przekroczono dostępny limit żądań na minutę.
+5xx | Błędy po stronie serwera.
+500 | Wystąpił błąd po stronie API.
+503 | Usługa API jest wyłączona.
+
+# Uwierzytelnianie
+
+Wszystkie żądania do zasobów API muszą zawierać poprawny token w nagłówku `Authorization`:
+
+```
+Authorization: Bearer OAUTH_TOKEN
+```
+
+# Parametry zasobów
+
+Specyfikacja json:api przewiduje możliwość parametryzowania zapytań do zasobów m.in w celu filtrowania, sortowania, iterowania po "stronach",
+i włączania do odpowiedzi relacji. Faktycznie dostępne parametry znajdują się w opisach poszczególnych endpointów, natomiast
+poniższa lista ma jedynie charakter poglądowy - jakie efekty można osiągnąć przez parametryzację zapytań:
+
+- **[include](http://jsonapi.org/format/#fetching-relationships)**,
+  np. `GET /consents?include=content,people` żeby dołączyć do odpowiedzi relacje zasobu,
+- **[fields](http://jsonapi.org/format/#fetching-sparse-fieldsets)**,
+  np. `GET /consents?fields[content]=description` żeby zwrócić tylko treść zgody z relacji,
+- **[sort](http://jsonapi.org/format/#fetching-sorting)**,
+  np. `GET /consents?sort=expired_at` żeby posortować wszystkie zgody wg. czasu ich ważności,
+- **[page](http://jsonapi.org/format/#fetching-pagination)**,
+  np. `GET /consents?page[number]=1&page[size]=10` żeby zwrócić tylko pierwsze dziesięć wyników,
+- **[filter](http://jsonapi.org/format/#fetching-filtering)**,
+  np. `GET /consents?filter[site]=5668` żeby zwrócić wyniki z określonego site'a,
+
+# Tagowanie zasobów
+
+Do każdego żądania typu `POST` tworzącego nowy wpis w zasobach (people, consents, contents, itp) można przekazać opcjonalny
+atrybut `tag` w postaci listy, który jednocześnie jest filterem na tym zasobie. Dzięki temu klient może pobrać tylko określone
+zasoby - te, które np. wcześniej "tagował". Poniżej sposób użycia na przykładzie zasobu `/people`:
+
+## Dodanie taga
+
+**Żądanie**
+
+```
+POST /people
+Authorization: Bearer OAUTH_TOKEN
+Content-Type: application/vnd.api+json
+Accept: application/vnd.api+json
+
+{
+    "data": {
+        "attributes": {
+            "site": 1337,
+            "tags": ["leet"]
+        },
+        "type": "people"
+    }
+}
+```
+
+**Odpowiedź**
+
+```
+HTTP/1.1 201 Created
+Content-Type: application/vnd.api+json
+Location: /consents/d5259698-2e86-11e8-8ffe-2f04e50fffbb
+
+{
+    "data": {
+        "attributes": {
+            "id": "d5259698-2e86-11e8-8ffe-2f04e50fffbb",
+            "site": 1337,
+            "tags": [
+                "leet", "cool", "legacy"
+            ]
+        },
+        "type": "people"
+    }
+}
+```
+
+
+# Group OAuth
+
+## Pobieranie tokenu [/oauth/token]
+
+API wykorzystuje serwer OAuth2 w celu uwierzytelniania klientów.
+
+### POST
+
+Aby wygenerować token, aplikacja (klient) musi być wcześniej zarejestrowana w API (ma nadane `client_id` i `client_secret`).
+
+**Password grant**
+
+W przypadku, kiedy przetwarzamy dane w imieniu użytkownika zarejestrowanego w systemie,
+musimy wystąpić o token skojarzony z danymi tego użytkownika. W tym celu musimy przekazać poświadczenia zarówno klienta jak i użytkownika.
+
+**Client credentials grant**
+
+Czasami wymagane jest uzyskanie tokenu poprzez uwierzytelnienie samej aplikacji (klienta), a nie użytkownika.
+Ten rodzaj grantu jest przeznaczony do komunikacji bezpośredniej (usługa-usługa), na przykład w celu wykonaniu zadania wynikającego z cronjoba.
+
+**Refresh token grant**
+
+Co do zasady komunikacja przez bezstanowe api charakteryzuje się brakiem sesji i opiera na tokenach, które mają określony czas ważności. W przypadku, gdy
+generujemy token poprzez `password grant` otrzymujemy w odpowiedzi także `refresh token`, który powinien zostać zapisany/skojarzony z użytkownikiem i zamieniony
+na `access token` w przypadku, gdy oryginalny token utracił ważność.
+
++ Attributes
+    + grant_type (string) - Jeden z dostępnych grantów określonych przez [OAuth2](https://alexbilbie.com/guide-to-oauth-2-grants)
+    + username: USERNAME (string) - Identyfikator użytkownika aplikacji, najczęściej login albo email. W naszym przypadku jest to login z bazy użytkowników.
+    + password: PASSWORD (string) - Hasło użytkownika aplikacji. W naszym przypadku jest to hasło które odpowiada skrótowi (hashowi) z bazy użytkowników.
+    + client_id: CLIENT_ID (string)- Identyfikator aplikacji klienckiej, która występuje o grant.
+    + client_secret: CLIENT_SECRET (string) - Jeżeli został nadany klucz aplikacji klienckiej, która występuje o grant, należy go także przekazać.
+    + scope (string) - Uprawnienia z jakimi wystawiony ma być token.
+
++ Request Password grant (application/x-www-form-urlencoded; charset=utf-8)
+
+        grant_type=password& \
+        client_id=CLIENT_ID& \
+        client_secret=CLIENT_SECRET& \
+        username=USERNAME& \
+        password=PASSWORD& \
+        scope=%2A
+
++ Response 200 (application/json; charset=UTF-8)
+
+    + Body
+
+            {
+                "token_type": "Bearer",
+                "expires_in": 86400,
+                "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6IjFkMDFhZTY2MDJiNDZjYzRiZmYxMjE1ZmI5NDdjMDFjYzhmOWU4YzNjOWQ0Nzc5ZWE0N2U3MWM1ZDdjZWZmNDAzNTc5OGQ2NjRkNWZlNmRkIn0.eyJhdWQiOiIyIiwianRpIjoiMWQwMWFlNjYwMmI0NmNjNGJmZjEyMTVmYjk0N2MwMWNjOGY5ZThjM2M5ZDQ3NzllYTQ3ZTcxYzVkN2NlZmY0MDM1Nzk4ZDY2NGQ1ZmU2ZGQiLCJpYXQiOjE1MTk1OTE1NjQsIm5iZiI6MTUxOTU5MTU2NCwiZXhwIjoxNTE5Njc3OTY0LCJzdWIiOiIxIiwic2NvcGVzIjpbIioiXX0.Qe_b44PCIMTLaf2RBq5B5NXmvCkR6cbEXMU-THGSj1xojjlQTEEYSVNleoW0_IZNhKjW-OSoY2Ad9cg8pM9dM0U7r9dKes530orj9FdmMGns5YgvFgbHxEvdQDFEaFNrGSWUPHPoyz31ZeGy82ZEumau2InaYoC8MeeXL7n6zmlvle9qIDvrwF2zPsxRcU32FaqAGJVB2b71-JH4iQ4hiEWNY_NNMT-Hx4WbuPLqFKQSCTJP_cgnTogbK7Q8m634woJ3644XVYGtH2pt3mckgW-S6Ynflzz6HJpB1qojd2-0ioxL-P-qI6qVgSfwTRlj0eVwecImCl062D10qLuEE9nDCTnr3U65EL-0KL7lKVMZmCM1oujD0szZMTDXVHVGVlYwD1EC4LS6S6xyh7UaeSTS3BLtjqi5xTntIfmtCp-Vy6IgjP-9nOd62Db7eHR2o9qDUt9b356rHwTCig4-qUaJHrQKWPF_jhLnBX_fC29PrO-bSRaGAmFKZ3QT11TGJ69b_gHWWEQwMuwm5Svp2bWii7jprPT3HJbgZmP2L4oeRHFAK4aPF2lxtpri_QQmLmdL2I6ZJ74TNBtuwxg_QwiV_qWY2ErGFkDIKte9B-k-4gMJBEraaa2gHmjhXpn2ecVE81Bt7IwpYX2qDvyIzcTeA1ZviSyODBuspyzJ-dw",
+                "refresh_token": "def50200fd20d505e763187ee73aba8dbf712e3d313a43e3186b4b2f98cc930d6149b5b1637f0b2dc83e4ea66f452ddf1873c86284f932ea1f01f844832476aaee1318bdcd7484fc0ee678660144eb619f93c1487eed7ffde3131949b531b32b4cb4c669a55412a181213000abb242c9df4753fd3657aba129245c5244d8ee68ee4334d1f9c6749a578c20448be88d9a35cc3693bdd979efbad5a6642c015761f0f4602e58e14f7d4b0a562b245ab2964df4e22702677238849daf4c95a25d4582d69594360b53f805908fb06a5cd0daae721e4acea49dddbe553ec1d003f1a25f20e6ee62ecd377c44f89372e9446e97084c5ba7647ce4ec7945798332ddc795c900994c3f0c126839da31201c0e23e3b67f289c54691df40277dfa44d1f77b22935cc96f5c88c6c6ae69995f1c4be6b3c584aeafdfadff189cccf977f656999c65d369efb01a4049bf9d30df54a714f48e2581237d730ebe700bc3fa3a9528c8717c61"
+            }
+
+
++ Request Client credentials grant (application/x-www-form-urlencoded; charset=utf-8)
+
+        grant_type=client_credentials& \
+        client_id=CLIENT_ID& \
+        client_secret=CLIENT_SECRET& \
+        scope=%2A
+
++ Response 200 (application/json; charset=UTF-8)
+
+    + Body
+
+            {
+                "token_type": "Bearer",
+                "expires_in": 86400,
+                "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6IjA2NDVmODVhZjJjOTYzYmRmODk5OGE5YWU4NGExNDk2MGFjNmI0OTE3NjBlYTBmYzY5NjdhODllNjNmMzYxNmJmNTk5MjExYTA5NTAzZjdiIn0.eyJhdWQiOiIyIiwianRpIjoiMDY0NWY4NWFmMmM5NjNiZGY4OTk4YTlhZTg0YTE0OTYwYWM2YjQ5MTc2MGVhMGZjNjk2N2E4OWU2M2YzNjE2YmY1OTkyMTFhMDk1MDNmN2IiLCJpYXQiOjE1MTk1OTE0MTgsIm5iZiI6MTUxOTU5MTQxOCwiZXhwIjoxNTE5Njc3ODE4LCJzdWIiOiIiLCJzY29wZXMiOltdfQ.W12HqXcQGL2RtQko3ksLQqqYdUCEIRCQJZz0RqE31V9hyHkWnp1hTPa-igS-pobq72WW86xZSuxkmZZL0u5ySHSj3xhZefUcm4zUcBnQp31LpJqZbl1Hp4B-ImkgW0A6X8AQvGsQ0cEPWTGP-KXDisEY4eyZPA-QpOYsZYRqZg3UOdJLGcWF0XVJXeOO_EiJ6Pv3yX2GVu7wFyEgkJHMzuuggW6a9OfOjeZORqIVrhTRpKht0AAWEImIqe83lqHib1Ai01FlEXomJ-jQ9uJy6gC-qgOYwi-cR8OwJx3_OysvSv1j4n8PeyHkExug8JtYcM7GWPI0zfGMsbYO1wBdEJZc6mUnGHOML29OfVcEcXhEvDDbVkKnrNvqK1qdYEYlIj2sPKhZ1Y-Veg5oglTcsUITAWPtUVR8WQKxavNsoVAZAtd1sh51KHhHIaK47XotKmgV0Mtd9oJBHRa4Po-Yms0DzppKSRoeZ5dOJ_0PBS2hOOXqmy5j0X1_yo5a6BLJCsIsHCmVuvKE_CAmlfVW3csGD6eBC5WsSbmEYxf2C4TiOEu3YN9RMkn3k8mctZU7XjFb0Pq08x2wbB_c6Q2LEbYgN6g8cvu3xqROs7KEB0s3wl2snhY4cC5pt3k6BNHhVewUkfG0jPkGQQisv3FmNsD1ekLYlUMx45dbYoXjuTE"
+            }
+
++ Request Refresh token grant (application/x-www-form-urlencoded; charset=utf-8)
+
+        grant_type=refresh_token& \
+        refresh_token=REFRESH_TOKEN \
+        client_id=CLIENT_ID& \
+        client_secret=CLIENT_SECRET& \
+        scope=%2A
+
++ Response 200 (application/json; charset=UTF-8)
+
+    + Body
+
+            {
+                "token_type": "Bearer",
+                "expires_in": 86399,
+                "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6IjM5ZGM2MzVhMGQwYWM5YjAwYzhmYzEwZTkyNzBiNTU5YjMzNTcyMTA4YWMwYzZlMzhiM2FiMmFhYjdhOGI5M2QzYmRkYTI3YjM3NGIzMjViIn0.eyJhdWQiOiIyIiwianRpIjoiMzlkYzYzNWEwZDBhYzliMDBjOGZjMTBlOTI3MGI1NTliMzM1NzIxMDhhYzBjNmUzOGIzYWIyYWFiN2E4YjkzZDNiZGRhMjdiMzc0YjMyNWIiLCJpYXQiOjE1MTk1OTYwODUsIm5iZiI6MTUxOTU5NjA4NSwiZXhwIjoxNTE5NjgyNDg0LCJzdWIiOiIxIiwic2NvcGVzIjpbIioiXX0.E2g5p26XGfS31Do_R-uuY03QNzYmgBN8AJC6XEpVSX7YEN0ws-3pwdMu2kK4KAYEmf3W72tOFmjrgvKlW8AKVrE3B2qPVY1Axxx2dwQNndl-pDVVorunYABvuuYWyu0hZFpGyrwlkB5lnjs5PGFX_bDh4rrc96FuzvcAy3wP3T5CrrOEzWzY2Zkc2sA81E60p9qnQq9Xg5PUT69Z4C52waotoPJYzyz4O9lmqWFaQj_R7Q7RP9ZLieJN2TOiBRNOdZvvswHko-yXQ9WX1W0wi9Z7Wa0IjP1f3PbPMmbujTcnEmtZGPTVopwfn1MyWCOxlO_UVAvAh_7KTQYTGzVGp_KAI-XO9hrfL3Mzshm_UsbCwepcAF4opsylyMwd2we9BfapF271ojJggQTZI-nPsouos9ybSnv53k4qawQuQroJCvVa8JnBwRlbN7LXDXqdB3WnB_TtzO3nPXdAaiGcXNvSLtxJUjK6jJkT1tyjV8gM37DmlGo4CxpU21v7jTNTBsgaZBTvHte9kRgOyqW2eveVD9oMiKWqBEg-6r4jwr6nwNZoBvtEehXFIRDq2Q5NFNfFYeNxAPx9-LM24graGB3ZTHU8g38NkC8RVs5Dyx8E9fiMfDCeAyfYzYpATQqfzRReT540_jFUkL11rkkZnsrAot3wU26PE8gSIn26EBM",
+                "refresh_token": "def502002ec7c25b1dfb865b286dee8e4e3cd4eee4bd2af311d19329be203f22cc39ab2c8a626dae4a9972502f513f96c63982dc8252900300614864a2e76e1c6bc79e70e2ece89f480504ad7881e43155d7f805b863acee17ba5411ca8bef66caf73113b43d4186f2e4c4d0eb6d81111f2c01e9fe59f645cc0563d888d4c2e930db78a3ea340c84b05339025f28d0b2baaa495bcc0cdfcc686b7f5e498eda891122c6de2cab2c8e76a10576509d42b5a1becb582fc980fd19f7df276282a8097b48a95aff1b56c5b8ec112c1752a5f891149a6d8944f122486eaa6b4ffb580a58e29b0e2035991c413389893ae3ff2d0be6ffd4794f1176cc8247fc84a61d5076799950660dd40f2115cc21bfd02051bf175ef20e1f8a712fc0384e58cd6c5a9378a8c877c7229b84d15763560aec298b8485e2cd26d13e01d24aab2e6e4282a7a21e403d4d181846f86442d36ca1280594c65a6f366787382802834defe8e35a01893e"
+            }
+
+
+# Group Filtracja
+
+Istnieje możliwość filtrowania wybranych kolekcji zasobów na podstawie określonych atrybutów.
+
+Wielkość liter nie ma znaczenia w przypadku każdego z filtrów.
+
+## Filtry podstawowe
+
+**Emails**
+
+* _address_ - filtrowanie na podstawie adresu e-mail (np. `filter[address]=foo.bar@gmail.com`)
+
+**Consents**
+
+* _confirmed_ - potwierdzone lub niepotwierdzone zgody; wartości "true", "false", "1" lub "0" (np. `filter[confirmed]=1`)
+* _person_ - zgody należące do wskazanej osoby (np. `filter[person]=52d8ad7a-30e7-11e8-bd74-080027192ca4`)
+* _purpose_ - zgody na przetwarzanie w określonych celu (np. `filter[purpose]=52d8ad7a-30e7-11e8-bd74-080027192ca4`)
+* _emails.address_ - zgody na przetwarzanie określonego adresu e-mail (np. `filter[emails.address]=foobar@gmail.com`)
+* _phones.number_ - zgody na przetwarzanie określonego numeru telefonu (np. `filter[phones.number]=123123123`)
+
+**People**
+
+* _site_ - osoby przypisane do określonych site-ów; jedna lub więcej wartości liczbowych oddzielonych przecinkami (np. `filter[site]=5049,1024,3224`)
+
+**Personal details**
+
+* _first_name_ - osoby o podanym imieniu (np. `filter[first_name]=Ryszard`)
+* _last_name_ - osoby o podanym nazwisku (np. `filter[last_name]=Chaplin`)
+* _full_name_ - uwzględnia wszystkie imiona oraz nazwiska osób (np. `filter[full_name]=Ryszard%20Chaplin`)
+
+**Phones**
+
+* _number_ - filtrowanie na podstawie numeru telefonu (np. `filter[number]=123123123`)
+
+## Filtry globalne
+
+Następujące filtry są dostępne dla wsystkich zasobów.
+
+### Filtrowanie po liście id
+
+Filtr `id` pozwala znaleźć zasoby na podstawie listy ich identyfikatorów.
+
+### Filtrowanie po zapytaniach
+
+Filtr `query` umożliwa pobranie zasobów na podstawie stworzonego wcześniej zestawu dowolnych filtrów,
+reprezentowanego przez zasób `queries`.
+
+Więcej informacji na temat zapytań w sekcji [Zapytania](#zapytania).
+
+### Filtrowanie po tagach
+
+Filtr `tag` daje możliwość pobranie zasobów z określonymi tagami.
+
+Więcej informacji na temat tagów w sekcji [Tagowanie zasobów](#header-tagowanie-zasob%C3%B3w).
+
+**Żądanie**
+
+```
+GET /people?filter%5Btag%5D=legacy
+Authorization: Bearer OAUTH_TOKEN
+Content-Type: application/vnd.api+json
+Accept: application/vnd.api+json
+```
+
+**Odpowiedź**
+
+```
+HTTP/1.1 200 OK
+Content-Type: application/vnd.api+json
+
+{
+    "data": [
+        {
+            "attributes": {
+                "site": 1337,
+                "tags": [
+                    "leet",
+                    "cool",
+                    "legacy"
+                ]
+            },
+            "id": "d5259698-2e86-11e8-8ffe-2f04e50fffbb",
+            "type": "people"
+        }
+    ],
+    "links": {
+        "first": "http://vault/people?filter%5Btag%5D=legacy&page=1",
+        "last": "http://vault/people?filter%5Btag%5D=legacy&page=1",
+        "self": "http://vault/people?filter%5Btag%5D=legacy&page=1"
+    },
+    "meta": {
+        "pagination": {
+            "count": 1,
+            "current_page": 1,
+            "per_page": 15,
+            "total": 1,
+            "total_pages": 1
+        }
+    }
+}
+```
+
+
+# Group Operacje na zgodach
+
+## Zgody [/consents]
+
+### Pobierz [GET /consents/{id}]
+
++ Parameters
+    + id: `f182b3e8-2076-11e8-91ae-186590cb13f7` (string) - Unikalny identyfikator zgody
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
++ Response 200 (application/vnd.api+json)
+
+    + Attributes (Consent Response Object)
+
+### Pobierz kolekcję [GET]
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
++ Response 200 (application/vnd.api+json)
+
+    + Attributes (Consent Response Collection)
+
+### Zapisz [POST]
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
+    + Attributes (Consent Request Object)
+
++ Response 201 (application/vnd.api+json)
+
+    + Headers
+
+            Location: /consents/f182b3e8-2076-11e8-91ae-186590cb13f7
+
+    + Attributes (Consent Response Object)
+
+### Zmodyfikuj [PATCH /consents/{id}]
+
++ Parameters
+    + id: `f182b3e8-2076-11e8-91ae-186590cb13f7` (string) - Unikalny identyfikator zgody
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
+    + Attributes (Consent Request Object)
+
++ Response 204
+
+### Usuń [DELETE /consents/{id}]
+
++ Parameters
+    + id: `f182b3e8-2076-11e8-91ae-186590cb13f7` (string) - Unikalny identyfikator zgody
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
++ Response 204
+
+
+## Cele zgód [/purposes]
+
+### Pobierz [GET /purposes/{id}]
+
++ Parameters
+    + id: `aa98f134-207d-11e8-b1f6-e6103cfc83e2` (string) - Unikalny identyfikator celu zgody
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
++ Response 200 (application/vnd.api+json)
+
+    + Attributes (Purpose Response Object)
+
+### Pobierz kolekcję [GET]
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
++ Response 200 (application/vnd.api+json)
+
+    + Attributes (Purpose Response Collection)
+
+### Zapisz [POST]
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
+    + Attributes (Purpose Request Object)
+
++ Response 201 (application/vnd.api+json)
+
+    + Headers
+
+            Location: /purposes/aa98f134-207d-11e8-b1f6-e6103cfc83e2
+
+    + Attributes (Purpose Response Object)
+
+### Zmodyfikuj [PATCH /purposes/{id}]
+
++ Parameters
+    + id: `aa98f134-207d-11e8-b1f6-e6103cfc83e2` (string) - Unikalny identyfikator celu zgody
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
+    + Attributes (Purpose Request Object)
+
++ Response 204
+
+### Usuń [DELETE /purposes/{id}]
+
++ Parameters
+    + id: `aa98f134-207d-11e8-b1f6-e6103cfc83e2` (string) - Unikalny identyfikator celu zgody
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
++ Response 204
+
+
+## Treści zgód [/contents]
+
+### Pobierz [GET /contents/{id}]
+
++ Parameters
+    + id: `f15b1e78-2076-11e8-bd40-186590cb13f7` (string) - Unikalny identyfikator treści zgody
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
++ Response 200 (application/vnd.api+json)
+
+    + Attributes (Content Response Object)
+
+### Pobierz kolekcję [GET]
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
++ Response 200 (application/vnd.api+json)
+
+    + Attributes (Content Response Collection)
+
+### Zapisz [POST]
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
+    + Attributes (Content Request Object)
+
++ Response 201 (application/vnd.api+json)
+
+    + Headers
+
+            Location: /contents/f15b1e78-2076-11e8-bd40-186590cb13f7
+
+    + Attributes (Content Response Object)
+
+### Zmodyfikuj [PATCH /contents/{id}]
+
++ Parameters
+    + id: `f15b1e78-2076-11e8-bd40-186590cb13f7` (string) - Unikalny identyfikator treści zgody
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
+    + Attributes (Content Patch Object)
+
++ Response 204
+
+### Usuń [DELETE /contents/{id}]
+
++ Parameters
+    + id: `f15b1e78-2076-11e8-bd40-186590cb13f7` (string) - Unikalny identyfikator treści zgody
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
++ Response 204
+
+# Group Osoby i dane osobowe
+
+## Osoby [/people]
+
+### Pobierz [GET /people/{id}]
+
++ Parameters
+    + id: `114f33b0-220f-11e8-8ddc-c5d2cce66e8b` (string) - Unikalny identyfikator osoby
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
++ Response 200 (application/vnd.api+json)
+
+    + Attributes (Person Response Object)
+
+### Pobierz kolekcję [GET]
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
++ Response 200 (application/vnd.api+json)
+
+    + Attributes (Person Response Collection)
+
+### Zapisz [POST]
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
+    + Attributes (Person Request Object)
+
++ Response 201 (application/vnd.api+json)
+
+    + Attributes (Person Response Object)
+
+
+## Dane personalne [/personaldetails]
+
+### Pobierz [GET /personaldetails/{id}]
+
++ Parameters
+    + id: `bb386860-23b3-11e8-a00c-e6103cfc83e2` (string) - Unikalny identyfikator danych osobowych
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
++ Response 200 (application/vnd.api+json)
+
+    + Attributes (PersonalDetail Response Object)
+
+### Pobierz kolekcję [GET]
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
++ Response 200 (application/vnd.api+json)
+
+    + Attributes (PersonalDetail Response Collection)
+
+### Zapisz [POST]
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
+    + Attributes (PersonalDetail Request Object)
+
++ Response 201 (application/vnd.api+json)
+
+    + Headers
+
+            Location: /personaldetails/8f7bf4bc-2796-11e8-8f4c-e6103cfc83e2
+
+    + Attributes (PersonalDetail Response Object)
+
+### Usuń [DELETE /personaldetails/{id}]
+
++ Parameters
+    + id: `bb386860-23b3-11e8-a00c-e6103cfc83e2` (string) - Unikalny identyfikator danych osobowych
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
++ Response 204
+
+
+## Adresy [/addresses]
+
+### Pobierz [GET /addresses/{id}]
+
++ Parameters
+    + id: `cd33eeca-213a-11e8-a4eb-e6103cfc83e2` (string) - Unikalny identyfikator adresu
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
++ Response 200 (application/vnd.api+json)
+
+    + Attributes (Address Response Object)
+
+### Pobierz kolekcję [GET]
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
++ Response 200 (application/vnd.api+json)
+
+    + Attributes (Address Response Collection)
+
+### Zapisz [POST]
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
+    + Attributes (Address Request Object)
+
++ Response 201 (application/vnd.api+json)
+
+    + Headers
+
+            Location: /addresses/cd33eeca-213a-11e8-a4eb-e6103cfc83e2
+
+    + Attributes (Address Response Object)
+
+### Usuń [DELETE /addresses/{id}]
+
++ Parameters
+    + id: `cd33eeca-213a-11e8-a4eb-e6103cfc83e2` (string) - Unikalny identyfikator adresu
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
++ Response 204
+
+
+## Emaile [/emails]
+
+### Pobierz [GET /emails/{id}]
+
++ Parameters
+    + id: `f19cd20a-2076-11e8-9930-186590cb13f7` (string) - Unikalny identyfikator emaila
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
++ Response 200 (application/vnd.api+json)
+
+    + Attributes (Email Response Object)
+
+### Pobierz kolekcję [GET]
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
++ Response 200 (application/vnd.api+json)
+
+    + Attributes (Email Response Collection)
+
+### Zapisz [POST]
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
+    + Attributes (Email Request Object)
+
++ Response 201 (application/vnd.api+json)
+
+    + Headers
+
+            Location: /emails/f19cd20a-2076-11e8-9930-186590cb13f7
+
+    + Attributes (Email Response Object)
+
+### Usuń [DELETE /emails/{id}]
+
++ Parameters
+    + id: `f19cd20a-2076-11e8-9930-186590cb13f7` (string) - Unikalny identyfikator emaila
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
++ Response 204
+
+
+## Telefony [/phones]
+
+### Pobierz [GET /phones/{id}]
+
++ Parameters
+    + id: `f1b6d416-2076-11e8-a911-186590cb13f7` (string) - Unikalny identyfikator telefonu
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
++ Response 200 (application/vnd.api+json)
+
+    + Attributes (Phone Response Object)
+
+### Pobierz kolekcję [GET]
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
++ Response 200 (application/vnd.api+json)
+
+    + Attributes (Phone Response Collection)
+
+### Zapisz [POST]
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
+    + Attributes (Phone Request Object)
+
++ Response 201 (application/vnd.api+json)
+
+    + Headers
+
+            Location: /phones/f1b6d416-2076-11e8-a911-186590cb13f7
+
+    + Attributes (Phone Response Object)
+
+### Usuń [DELETE /phones/{id}]
+
++ Parameters
+    + id: `f1b6d416-2076-11e8-a911-186590cb13f7` (string) - Unikalny identyfikator telefonu
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
++ Response 204
+
+
+# Group Zapytania
+
+## Zapytania [/queries]
+
+### Pobierz [GET /queries/{id}]
+
++ Parameters
+    + id: `f1b6d416-2076-11e8-a911-186590cb13f7` (string) - Unikalny identyfikator zapytania
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
++ Response 200 (application/vnd.api+json)
+
+    + Attributes (Query Response Object)
+
+### Zapisz [POST]
+
++ Request (application/vnd.api+json)
+
+    + Headers
+
+            Authorization: Bearer VALID_OAUTH_TOKEN
+            Accept: application/vnd.api+json
+
+    + Attributes (Query Request Object)
+
++ Response 201 (application/vnd.api+json)
+
+    + Headers
+
+            Location: /queries/f1b6d416-2076-11e8-a911-186590cb13f7
+
+    + Attributes (Query Response Object)
+
+
+# Data Structures
+
+## Consent Request Object (object)
+
+- data (object, required)
+    - type: consents (string, required)
+    - Include Consent Attributes
+    - relationships (object, required)
+        - person (object, required)
+            - data (Person Relation Object, required)
+        - content(object, required)
+             - data (Content Relation Object, required)
+
+## Consent Attributes (object)
+
+- attributes (object)
+    - confirmed: true (boolean, required) - Czy zgoda została potwierdzona przez użytkownika
+    - expired_at: `2020-04-08` (string, required) - Data wygaśniecia zgody w formacie YYYY-MM-DD
+    - meta (object, optional) - Metadane w postaci klucz-wartość związane z udzieleniem zgody (np adres ip, user-agent, etc)
+
+## Consent Object (object)
+
+- type: consents (string, required)
+- id: `f182b3e8-2076-11e8-91ae-186590cb13f7` (string, required) - Unikalny identifikator zgody
+- Include Consent Attributes
+
+## Consent Response Object (object)
+
+- data (object, required)
+    - Include Consent Object
+
+## Consent Response Collection (object)
+
+- data (array[Consent Object])
+- links (object, required)
+- meta (object, required)
+    - pagination (object, required)
+
+
+## Purpose Request Object (object)
+
+- data (object, required)
+    - type: purposes (string, required)
+    - Include Purpose Attributes
+
+## Purpose Attributes (object)
+
+- attributes (object, required)
+    - description: `zgoda na marketing bezpośredni` (string, required) - Opis celu przetwarzania danych osobowych
+
+## Purpose Object Attributes (object)
+
+- type: purposes (string, required)
+- id: `aa98f134-207d-11e8-b1f6-e6103cfc83e2` (string, required) - Unikalny identyfikator celu zgody
+- Include Purpose Attributes
+
+## Purpose Response Object (object)
+
+- data (object, required)
+    - Include Purpose Object Attributes
+
+## Purpose Response Collection (object)
+
+- data (array[Purpose Response Object])
+- links (object, required)
+- meta (object, required)
+    - pagination (object, required)
+
+
+## Content Request Object (object)
+
+- data (object, required)
+    - type: contents (string, required)
+    - Include Content Attributes
+
+## Content Patch Object (object)
+
+- data (object, required)
+    - id: `f15b1e78-2076-11e8-bd40-186590cb13f7` (string, required) - Unikalny identyfikator treści zgody
+    - type: contents (string, required)
+    - Include Content Attributes
+
+## Content Attributes (object)
+
+- attributes (object, required)
+    - name: `crm.marketing.newsletter` (string, required)
+    - description: `Wyrażam zgodę na przetwarzanie moich danych osobowych..` (string, required) - Opis celu przetwarzania danych osobowych
+
+## Content Object (object)
+- Include Content Relation Object
+- Include Content Attributes
+
+## Content Response Object (object)
+
+- data (object, required)
+    - Include Content Object
+
+## Content Response Collection (object)
+
+- data (array[Content Object])
+- links (object, required)
+- meta (object, required)
+    - pagination (object, required)
+
+## Content Relation Object
+- type: contents (string, required)
+- id: `f15b1e78-2076-11e8-bd40-186590cb13f7` (string, required) - Unikalny identyfikator treści zgody
+
+
+## Person Request Object (object)
+
+- data (object, required)
+    - type: people (string, required)
+    - Include Person Attributes
+
+## Person Attributes (object)
+
+- attributes (object, required)
+    - site: 1337 (number, required)
+
+        Site do którego należy osoba. Uwaga: uwierzytelniony użytkownik musi mieć dostęp do danego site,
+        aby odczytywać/zapisywać w tym zasobie
+
+## Person Relation Object (object)
+
+- type: people (string, required)
+- id: `114f33b0-220f-11e8-8ddc-c5d2cce66e8b` (string, required) - Unikalny identyfikator osoby
+
+## Person Object (object)
+
+- Include Person Relation Object
+- Include Person Attributes
+
+## Person Response Object (object)
+
+- data
+    - Include Person Object
+
+## Person Response Collection (object)
+
+- data (array[Person Object])
+- relationships (object)
+    - emails (object)
+        - data (array[Email Relation Object])
+    - phones (object)
+        - data (array[Phone Relation Object])
+    - addresses (object)
+        - data (array[Address Relation Object])
+- links (object, required)
+- meta (object, required)
+    - pagination (object, required)
+
+
+## Address Request Object
+
+- data (object, required)
+    - type: addresses (string, required)
+    - Include Address Attributes
+    - relationships (object, required)
+        - person (object, required)
+            - data (object, required)
+                - Include Person Relation Object
+
+## Address Attributes
+
+- attributes (object, required)
+  - street: `75547 Elmore Crest` (string) - Ulica i numer domu
+  - city: Alyshamouth (string) - Miasto
+  - postcode: `02202-5442` (string) - Kod pocztowy
+  - state: Massachusetts (string) - Województwo
+  - country: `United States` - Kraj
+
+## Address Relation Object
+
+- type: addresses (string, required)
+- id: `cd33eeca-213a-11e8-a4eb-e6103cfc83e2` (string, required) - Unikalny identyfikator adresu
+
+## Address Object
+- Include Address Relation Object
+- Include Address Attributes
+
+## Address Response Object
+
+- data
+    - Include Address Object
+
+## Address Response Collection
+
+- data (array[Address Object])
+- links (object, required)
+- meta (object, required)
+    - pagination (object, required)
+
+
+## Email Request Object
+
+- data (object, required)
+    - type: emails (string, required)
+    - Include Email Attributes
+    - relationships (object, required)
+        - person (object, required)
+            - data (object, required)
+                - Include Person Relation Object
+
+## Email Attributes (object)
+
+- attributes (object)
+    - address: `efrain.ryan@example.com` (string, required) - Adres email
+
+## Email Relation Object (object)
+
+- type: emails (string, required)
+- id: `f19cd20a-2076-11e8-9930-186590cb13f7` (string, required) - Unikalny identyfikator emaila
+
+## Email Object (object)
+
+- Include Email Relation Object
+- Include Email Attributes
+
+## Email Response Object
+
+- data
+    - Include Email Object
+
+## Email Response Collection
+
+- data (array[Email Object])
+- links (object, required)
+- meta (object, required)
+    - pagination (object, required)
+
+
+## Phone Request Object
+
+- data (object, required)
+    - type: phones (string, required)
+    - Include Phone Attributes
+    - relationships (object, required)
+        - person (object, required)
+            - data (object, required)
+                - Include Person Relation Object
+
+## Phone Attributes (object)
+
+- attributes (object)
+    - number: `+3466458037107` (string, required) - Numer telefonu
+
+## Phone Relation Object (object)
+
+- type: phones (string, required)
+- id: `f1b6d416-2076-11e8-a911-186590cb13f7` (string, required) - Unikalny identyfikator telefonu
+
+## Phone Object (object)
+
+- Include Phone Relation Object
+- Include Phone Attributes
+
+## Phone Response Object
+
+- data (object, required)
+    - Include Phone Object
+
+## Phone Response Collection
+
+- data (array[Phone Object])
+- links (object, required)
+- meta (object, required)
+    - pagination (object, required)
+
+
+## PersonalDetail Request Object
+
+- data (object, required)
+    - type: personaldetails (string, required)
+    - Include PersonalDetail Attributes
+    - relationships (object, required)
+        - person (object, required)
+            - data (object, required)
+                - Include Person Relation Object
+
+## PersonalDetail Attributes (object)
+
+- attributes (object)
+    - first_name: John (string) - Imię
+    - middle_name: Billy (string) - Pozostałe imiona
+    - last_name: McClane (string) - Nazwisko
+    - date_of_birth: `1955-03-19` (string) - Data urodzenia w formacie YYYY-MM-DD
+    - sex: 1 (enum[number]) - Płeć zdefiniowana wg standardu https://en.wikipedia.org/wiki/ISO/IEC_5218
+        + Default: 0
+        + Members
+            + 0 - Nieznana
+            + 1 - Mężczyzna
+            + 2 - Kobieta
+            + 9 - Brak odpowiedzi
+    - marital_status: 5 (enum[number]) - Stan cywilny
+        + Default: 0
+        + Members
+            + 0 - Nieznany
+            + 1 - Kawaler/Panna
+            + 2 - Żonaty/Mężatka
+            + 3 - Wdowiec/Wdowa
+            + 4 - Rozwodnik/Rozwódka
+            + 5 - W separacji
+
+## PersonalDetail Relation Object (object)
+
+- type: personaldetails (string, required)
+- id: `bb386860-23b3-11e8-a00c-e6103cfc83e2` (string, required) - Unikalny identyfikator danych osobowych
+
+## PersonalDetail Object (object)
+
+- Include PersonalDetail Relation Object
+- Include PersonalDetail Attributes
+
+## PersonalDetail Response Object
+
+- data (object, required)
+    - Include PersonalDetail Object
+
+## PersonalDetail Response Collection
+
+- data (array[PersonalDetail Object])
+- links (object, required)
+- meta (object, required)
+    - pagination (object, required)
+
+
+## Query Request Object
+
+- data (object, required)
+    - type: queries (string, required)
+    - attributes (object)
+        - Include QueryFilters Object
+
+## Query Response Object
+
+- data (object, required)
+    - type: queries (string, required)
+    - attributes (object)
+        - Include QueryFilters Object
+        - ttl: 3600 (number) - Pozostały czas życia zasobu w sekundach
+
+## QueryFilters Object (object)
+
+- filters (object) - Lista filtrów oraz wartości
+    - id: `52c0c840-30e7-11e8-ba26-080027192ca4`, `52c70746-30e7-11e8-9d5a-080027192ca4` (array)

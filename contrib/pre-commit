@@ -1,0 +1,24 @@
+#!/bin/bash
+
+STAGED_FILES=`git diff --cached --name-only --diff-filter=ACMR HEAD | grep \\\\.php`
+
+for FILE in $STAGED_FILES; do
+
+    # Adopt Laravel's coding style to PhpDocs
+    sed -i -E "s/@param(\s+)([a-zA-Z|\\]+)(\s+)/@param  \2  /g" $FILE
+    git add $FILE
+
+    php -l -d display_errors=0 $FILE
+    if [ $? != 0 ]
+    then
+        echo "[pre-commit-hook] $FILE has syntax error(s)"
+        exit 1
+    fi
+
+    vendor/bin/phpcs --standard=PSR2 --encoding=utf-8 --ignore=spec,tests,migrations,seeds,factories -p $FILE
+    if [ $? != 0 ]
+    then
+        echo "[pre-commit-hook] $FILE is not PSR2 compliant"
+        exit 1
+    fi
+done

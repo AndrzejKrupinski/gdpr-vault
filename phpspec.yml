@@ -1,0 +1,9 @@
+suites:
+    app:
+        namespace: App
+        src_path: app
+    vault:
+        namespace: Vault
+        src_path: model
+
+formatter.name: pretty
