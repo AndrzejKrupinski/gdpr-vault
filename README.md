@@ -9,6 +9,7 @@ oraz inne standardy i konwencje. Autoryzacja jest zgodna z [OAuth2](https://en.w
 
 ## Dokumentacja
 Dokumentacja API jest w formacie [API Blueprint](https://apiblueprint.org) i znajduje się w pliku [apiary.apib](apiary.apib).
+Wygenerowana dokumentacja jest dostępna pod adresem [https://profitroom.github.io/gdpr-vault/](https://profitroom.github.io/gdpr-vault/).
 
 ## Błędy i sugestie
 Błędy, braki oraz wszelkiego rodzaju sugestie dotyczące działania i dokumentacji API, można zgłaszać bezpośrednio w [issues](https://github.com/profitroom/gdpr-vault/issues).
